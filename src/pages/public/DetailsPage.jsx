@@ -1,0 +1,965 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { motion } from 'framer-motion';
+import { MapPin, Clock, Star, Heart, Share2, Users, Calendar, ChefHat, Info, Loader2, ShieldAlert, Phone, Mail } from 'lucide-react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useDispatch, useSelector } from 'react-redux';
+import { fetchRestaurantById, clearCurrentRestaurant } from '../../app/features/restaurantSlice';
+import { fetchPackagesByRestaurant } from '../../app/features/packageSlice';
+import { fetchPublicSlots, clearPublicSlots } from '../../app/features/timeSlotSlice';
+import { addReview } from '../../app/features/reviewSlice';
+import { io } from 'socket.io-client';
+import api from '../../services/api';
+import ReservationCancelModal from '@/components/common/ReservationCancelModal';
+
+import { useAlert } from '@/context/AlertContext';
+
+const DetailsPage = () => {
+    const { showAlert } = useAlert();
+    const { id } = useParams();
+    const navigate = useNavigate();
+    const dispatch = useDispatch();
+    const { currentRestaurant: restaurant, loading, error } = useSelector((state) => state.restaurants);
+    const { list: packages, loading: packLoading } = useSelector((state) => state.packages);
+    const { publicSlots, loading: slotLoading } = useSelector((state) => state.timeSlots);
+    const { isAuthenticated, user } = useSelector((state) => state.auth);
+
+    // Duplicate booking check state
+    const [existingBooking, setExistingBooking] = useState(null);
+    const [isSelectedFull, setIsSelectedFull] = useState(false);
+    const [bookingLoading, setBookingLoading] = useState(false);
+    const [bookingChecked, setBookingChecked] = useState(false);
+    const [cancelLoading, setCancelLoading] = useState(false);
+    const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+
+    const [activeTab, setActiveTab] = useState('menu');
+    const [guests, setGuests] = useState(2);
+    const [date, setDate] = useState("");
+    const [time, setTime] = useState("");
+    const [selectedPackage, setSelectedPackage] = useState("");
+    const [liveCrowd, setLiveCrowd] = useState(null);
+
+    const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+    const [reviewRating, setReviewRating] = useState(5);
+    const [reviewComment, setReviewComment] = useState("");
+    const [foodRating, setFoodRating] = useState(0);
+    const [ambienceRating, setAmbienceRating] = useState(0);
+    const [staffRating, setStaffRating] = useState(0);
+    const { loading: reviewLoading } = useSelector((state) => state.reviews);
+
+    // Live reviews state
+    const [liveReviews, setLiveReviews] = useState([]);
+    const [reviewsLoading, setReviewsLoading] = useState(false);
+    const [avgRating, setAvgRating] = useState(0);
+
+    // Live menu state
+    const [liveMenu, setLiveMenu] = useState({});
+    const [menuLoading, setMenuLoading] = useState(false);
+
+    const dateRef = useRef(date);
+    const guestsRef = useRef(guests);
+    const activeTabRef = useRef(activeTab);
+
+    useEffect(() => { dateRef.current = date; }, [date]);
+    useEffect(() => { guestsRef.current = guests; }, [guests]);
+    useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+
+    const checkDuplicate = useCallback(async () => {
+        if (isAuthenticated && id) {
+            try {
+                const res = await api.get(`reservations/restaurant/${id}/check`);
+                if (res.data.hasBooking) {
+                    setExistingBooking(res.data.booking);
+                } else {
+                    setExistingBooking(null);
+                }
+            } catch (err) {
+                console.error("Failed to check duplicate booking", err);
+            } finally {
+                setBookingChecked(true);
+            }
+        } else {
+            setBookingChecked(true);
+        }
+    }, [isAuthenticated, id]);
+
+    useEffect(() => {
+        checkDuplicate();
+    }, [checkDuplicate]);
+
+    const handleCancelBooking = async () => {
+        if (!existingBooking) return;
+        setIsCancelModalOpen(true);
+    };
+
+    const handleConfirmCancel = async (bookingId) => {
+        setCancelLoading(true);
+        try {
+            await api.put(`reservations/${bookingId}/cancel`);
+            showAlert({
+                type: 'success',
+                title: 'Success',
+                message: 'Reservation cancelled successfully.'
+            });
+            setExistingBooking(null);
+            checkDuplicate(); // refresh
+        } catch (error) {
+            console.error(error);
+            showAlert({
+                type: 'error',
+                title: 'Error',
+                message: 'Failed to cancel reservation.'
+            });
+        } finally {
+            setCancelLoading(false);
+        }
+    };
+
+    const fetchLiveMenu = useCallback(async (restaurantId) => {
+        if (!restaurantId) return;
+        setMenuLoading(true);
+        try {
+            const res = await api.get(`menu/${restaurantId}`);
+            const grouped = {};
+            res.data.forEach(item => {
+                if (item.isAvailable === false || item.status === 'Inactive') return;
+                const cat = item.category || 'Specials';
+                if (!grouped[cat]) grouped[cat] = [];
+                grouped[cat].push(item);
+            });
+            setLiveMenu(grouped);
+        } catch (e) {
+            console.error('Failed to fetch menu', e);
+        } finally {
+            setMenuLoading(false);
+        }
+    }, []);
+
+    const fetchLiveReviews = useCallback(async (restaurantId) => {
+        if (!restaurantId) return;
+        setReviewsLoading(true);
+        try {
+            const res = await api.get(`reviews/${restaurantId}`);
+            setLiveReviews(res.data);
+            if (res.data.length > 0) {
+                const avg = res.data.reduce((acc, r) => acc + r.rating, 0) / res.data.length;
+                setAvgRating(parseFloat(avg.toFixed(1)));
+            } else {
+                setAvgRating(0);
+            }
+        } catch (e) {
+            console.error('Failed to fetch reviews', e);
+        } finally {
+            setReviewsLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (id) {
+            dispatch(fetchRestaurantById(id));
+            dispatch(fetchPackagesByRestaurant(id));
+        }
+        return () => {
+            dispatch(clearCurrentRestaurant());
+            dispatch(clearPublicSlots());
+        };
+    }, [dispatch, id]);
+
+    useEffect(() => {
+        if (date && id) {
+            dispatch(fetchPublicSlots({ restaurantId: id, date, partySize: guests }));
+            setTime("");
+            setSelectedSlotId("");
+        } else {
+            dispatch(clearPublicSlots());
+        }
+    }, [date, id, guests, dispatch]);
+
+    const [selectedSlotId, setSelectedSlotId] = useState("");
+
+    useEffect(() => {
+        if (restaurant?._id) {
+            fetchLiveReviews(restaurant._id);
+        }
+    }, [restaurant?._id, fetchLiveReviews]);
+
+    useEffect(() => {
+        if (activeTab === 'menu' && restaurant?._id) {
+            fetchLiveMenu(restaurant._id);
+        }
+    }, [activeTab, restaurant?._id, fetchLiveMenu]);
+
+    const [searchParams] = useSearchParams();
+    const reservationRef = useRef(null);
+
+    useEffect(() => {
+        if (searchParams.get('book') === 'true' && !loading && restaurant) {
+            setTimeout(() => {
+                reservationRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 500);
+        }
+    }, [searchParams, loading, restaurant]);
+
+    useEffect(() => {
+        if (restaurant?._id) {
+            setLiveCrowd(restaurant.crowd || '0%');
+
+            const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+            const socket = io(SOCKET_URL);
+
+            socket.emit('joinRestaurant', restaurant._id);
+
+            socket.on('crowdUpdated', (data) => {
+                if (data.restaurantId === restaurant._id) {
+                    setLiveCrowd(data.crowdLevel);
+                }
+            });
+
+            // Real-time review sync
+            socket.on('reviewUpdated', (data) => {
+                if (data.restaurantId === restaurant._id.toString()) {
+                    fetchLiveReviews(restaurant._id);
+                    dispatch(fetchRestaurantById(restaurant._id)); // refresh rating in header
+                }
+            });
+
+            // Real-time slot sync
+            socket.on('slotUpdated', (data) => {
+                if (data.restaurantId === restaurant._id.toString() && dateRef.current) {
+                    dispatch(fetchPublicSlots({ restaurantId: restaurant._id, date: dateRef.current, partySize: guestsRef.current }));
+                }
+            });
+
+            // Real-time menu sync
+            socket.on('menuUpdated', (data) => {
+                if (data.restaurantId === restaurant._id.toString() && activeTabRef.current === 'menu') {
+                    fetchLiveMenu(restaurant._id);
+                }
+            });
+
+            // Real-time restaurant sync
+            socket.on('restaurantUpdated', (data) => {
+                if (data.restaurantId === restaurant._id.toString()) {
+                    dispatch(fetchRestaurantById(restaurant._id));
+                }
+            });
+
+            socket.on('reservationUpdated', () => {
+                checkDuplicate();
+            });
+
+            return () => {
+                socket.disconnect();
+            };
+        }
+    }, [restaurant?._id, restaurant?.crowd, fetchLiveReviews, fetchLiveMenu, dispatch, checkDuplicate]);
+
+    const handleAddReview = async (e) => {
+        e.preventDefault();
+        try {
+            await dispatch(addReview({
+                restaurantId: restaurant._id,
+                rating: reviewRating,
+                comment: reviewComment,
+                foodRating,
+                ambienceRating,
+                staffRating
+            })).unwrap();
+            setIsReviewModalOpen(false);
+            setReviewComment('');
+            setReviewRating(5);
+            showAlert({
+                type: 'success',
+                title: 'Review Posted',
+                message: 'Thank you! Your review has been successfully posted.'
+            });
+            // Immediately refresh reviews + restaurant rating
+            fetchLiveReviews(restaurant._id);
+            dispatch(fetchRestaurantById(id));
+        } catch (error) {
+            showAlert({ type: 'error', title: 'Error', message: error || 'Failed to post review' });
+        }
+    };
+
+    if (loading) {
+        return (
+            <div className="w-full min-h-screen bg-zinc-950 flex items-center justify-center pt-20">
+                <div className="flex flex-col items-center">
+                    <ChefHat className="w-12 h-12 text-amber-500 animate-pulse mb-4" />
+                    <p className="text-zinc-400 font-light tracking-wider">Preparing your table...</p>
+                </div>
+            </div>
+        );
+    }
+
+    if (error || !restaurant) {
+        return (
+            <div className="w-full min-h-screen bg-zinc-950 flex flex-col items-center justify-center pt-20">
+                <h2 className="text-2xl text-white font-serif mb-2">Restaurant Unavailable</h2>
+                <p className="text-zinc-400 mb-6">{error || 'Could not find the requested restaurant.'}</p>
+                <button onClick={() => navigate('/restaurants')} className="text-amber-500 border border-amber-500 px-6 py-2 rounded-lg hover:bg-amber-500 hover:text-black transition-colors">
+                    Explore Other Venues
+                </button>
+            </div>
+        );
+    }
+
+    return (
+        <div className="w-full flex flex-col min-h-screen bg-zinc-950 pt-20 pb-16">
+
+            {/* Image Gallery */}
+            <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2 h-[50vh] min-h-[400px] rounded-2xl overflow-hidden">
+                    <div className="md:col-span-2 h-full">
+                        <img src={restaurant.images?.[0] || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80'} alt="Main" className="w-full h-full object-cover hover:scale-105 transition-transform duration-700 cursor-pointer" />
+                    </div>
+                    <div className="hidden md:flex flex-col gap-2 h-full">
+                        <img src={restaurant.images?.[1] || 'https://images.unsplash.com/photo-1544148103-0773bf10d330?q=80'} alt="Gallery 1" className="w-full h-1/2 object-cover hover:scale-105 transition-transform duration-700 cursor-pointer" />
+                        <img src={restaurant.images?.[2] || 'https://images.unsplash.com/photo-1559339352-11d035aa65de?q=80'} alt="Gallery 2" className="w-full h-1/2 object-cover hover:scale-105 transition-transform duration-700 cursor-pointer" />
+                    </div>
+                    <div className="hidden md:flex flex-col gap-2 h-full relative">
+                        <img src={restaurant.images?.[3] || 'https://images.unsplash.com/photo-1514933651103-005eec06c04b?q=80'} alt="Gallery 3" className="w-full h-1/2 object-cover hover:scale-105 transition-transform duration-700 cursor-pointer" />
+                        <div className="w-full h-1/2 relative group cursor-pointer">
+                            <img src={restaurant.images?.[0] || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80'} alt="Gallery 4" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
+                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                                <span className="text-white font-medium flex items-center"><Star className="w-4 h-4 mr-2" /> View More</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Main Content Area */}
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full mt-10">
+                <div className="flex flex-col lg:flex-row gap-12">
+
+                    {/* Left Column (Details) */}
+                    <div className="w-full lg:w-2/3">
+
+                        {/* Header Details */}
+                        <div className="flex justify-between items-start mb-6">
+                            <div>
+                                <h1 className="text-4xl md:text-5xl font-serif text-white mb-3">{restaurant.name}</h1>
+                                <div className="flex items-center text-zinc-400 text-sm flex-wrap gap-4">
+                                    <span className="flex items-center text-amber-500"><Star size={16} className="mr-1 fill-current" /> {avgRating || Number(restaurant.rating || 0).toFixed(1)} <span className="text-zinc-400 ml-1">({liveReviews?.length || restaurant.reviewCount || 0} Reviews)</span></span>
+                                    <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(restaurant.name + " " + restaurant.location)}`} target="_blank" rel="noopener noreferrer" className="flex items-center hover:text-amber-500 transition-colors cursor-pointer" title="View on Google Maps">
+                                        <MapPin size={16} className="mr-1" /> {restaurant.location}
+                                    </a>
+                                    <span className="flex items-center"><ChefHat size={16} className="mr-1" /> {restaurant.cuisine}</span>
+                                </div>
+                                {restaurant.ambienceTags?.length > 0 && (
+                                    <div className="flex flex-wrap gap-2 mt-4">
+                                        {restaurant.ambienceTags.map((tag, i) => (
+                                            <span key={i} className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-[10px] text-zinc-400 uppercase tracking-widest font-medium">
+                                                {tag}
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex gap-3">
+                                <button className="p-3 bg-zinc-900 border border-white/10 rounded-full text-white hover:text-amber-500 hover:border-amber-500/50 transition-colors">
+                                    <Share2 size={20} />
+                                </button>
+                                <button className="p-3 bg-zinc-900 border border-white/10 rounded-full text-white hover:text-red-500 hover:border-red-500/50 transition-colors">
+                                    <Heart size={20} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Crowd Status Glow Widget */}
+                        <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-10 bg-black/40 border border-white/10 p-6 rounded-2xl relative overflow-hidden group">
+                            <div className="absolute inset-0 bg-gradient-to-r from-green-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
+                            <div className="relative z-10 flex items-center gap-6">
+                                <div className="relative flex items-center justify-center w-14 h-14 bg-black rounded-full border border-green-500/30">
+                                    <span className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-20 animate-ping"></span>
+                                    <span className="text-green-400 font-serif font-bold text-xl drop-shadow-[0_0_8px_rgba(74,222,128,0.8)]">{liveCrowd || 'Wait'}</span>
+                                </div>
+                                <div>
+                                    <h4 className="text-white font-medium text-lg mb-0.5">Live Occupancy Tracking</h4>
+                                    <div className="flex items-center text-zinc-400">
+                                        <MapPin size={18} className="mr-2 text-zinc-500" />
+                                        <span>{restaurant.location}</span>
+                                        <a
+                                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(restaurant.name + ' ' + restaurant.location)}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="ml-4 flex items-center gap-1 text-xs text-amber-500 hover:text-amber-400 transition-colors bg-amber-500/10 px-2 py-1 rounded-full border border-amber-500/20"
+                                        >
+                                            <MapPin size={12} />
+                                            Navigate in Google Maps
+                                        </a>
+                                    </div>
+                                    <span className="text-zinc-400 flex items-center"><Clock size={14} className="mr-1 mt-0.5" /> Est Wait: {restaurant.wait || 'N/A'}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="text-xs text-zinc-400 mb-6 opacity-70 flex items-center justify-end">
+                            <div className="w-1.5 h-1.5 rounded-full bg-green-400 mr-1.5 animate-pulse"></div>
+                            Updated just now via Socket
+                        </div>
+
+                        {/* Description */}
+                        <div className="mb-12">
+                            <h3 className="text-2xl font-serif text-white mb-4">About</h3>
+                            <p className="text-zinc-400 leading-relaxed font-light mb-8">{restaurant.description}</p>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 bg-zinc-900/40 p-8 rounded-2xl border border-white/5">
+                                <div>
+                                    <h4 className="text-amber-500 text-xs uppercase tracking-widest font-bold mb-4">Working Hours</h4>
+                                    <div className="space-y-2 text-sm">
+                                        <div className="flex justify-between text-zinc-300">
+                                            <span className="font-light">Monday - Friday</span>
+                                            <span>{restaurant.workingHours?.weekday || '11:00 AM - 11:00 PM'}</span>
+                                        </div>
+                                        <div className="flex justify-between text-zinc-300">
+                                            <span className="font-light">Saturday - Sunday</span>
+                                            <span>{restaurant.workingHours?.weekend || '10:00 AM - 12:00 AM'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div>
+                                    <h4 className="text-amber-500 text-xs uppercase tracking-widest font-bold mb-4">Contact Info</h4>
+                                    <div className="space-y-2 text-sm">
+                                        <div className="flex items-center gap-2 text-zinc-300">
+                                            <Phone size={14} className="text-zinc-500" />
+                                            <span>{restaurant.contactNumber || '+91 98765 43210'}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 text-zinc-300">
+                                            <Mail size={14} className="text-zinc-500" />
+                                            <span className="truncate">{restaurant.email || `concierge@${restaurant.name?.toLowerCase().replace(/\s/g, '')}.com`}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Tabs content: Menu, Packages, Reviews */}
+                        <div className="border-b border-white/10 mb-8 flex gap-8">
+                            <button
+                                onClick={() => setActiveTab('menu')}
+                                className={`pb-4 px-2 text-lg font-medium transition-colors relative ${activeTab === 'menu' ? 'text-amber-500' : 'text-zinc-400 hover:text-white'}`}
+                            >
+                                Sample Menu
+                                {activeTab === 'menu' && <motion.div layoutId="tab-indicator" className="absolute bottom-0 left-0 w-full h-0.5 bg-amber-500" />}
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('packages')}
+                                className={`pb-4 px-2 text-lg font-medium transition-colors relative ${activeTab === 'packages' ? 'text-amber-500' : 'text-zinc-400 hover:text-white'}`}
+                            >
+                                Experiences & Packages
+                                {activeTab === 'packages' && <motion.div layoutId="tab-indicator" className="absolute bottom-0 left-0 w-full h-0.5 bg-amber-500" />}
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('reviews')}
+                                className={`pb-4 px-2 text-lg font-medium transition-colors relative ${activeTab === 'reviews' ? 'text-amber-500' : 'text-zinc-400 hover:text-white'}`}
+                            >
+                                Reviews
+                                {activeTab === 'reviews' && <motion.div layoutId="tab-indicator" className="absolute bottom-0 left-0 w-full h-0.5 bg-amber-500" />}
+                            </button>
+                        </div>
+
+                        {/* Menu Tab */}
+                        {activeTab === 'menu' && (
+                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
+                                {menuLoading ? (
+                                    <div className="flex justify-center py-10"><Loader2 className="w-8 h-8 text-amber-500 animate-spin" /></div>
+                                ) : Object.keys(liveMenu).length > 0 ? (
+                                    Object.keys(liveMenu).map(category => (
+                                        <div key={category}>
+                                            <h4 className="text-xl font-serif text-white mb-6 uppercase tracking-wider border-l-2 border-amber-500 pl-4">{category}</h4>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                {liveMenu[category].map((item, idx) => (
+                                                    <div key={idx} className="bg-zinc-900/50 border border-white/5 p-4 rounded-xl hover:border-amber-500/30 transition-colors">
+                                                        <div className="flex justify-between items-start mb-2">
+                                                            <span className="text-white font-medium">{item.name}</span>
+                                                            <span className="text-amber-500">{item.price}</span>
+                                                        </div>
+                                                        <p className="text-sm text-zinc-400 font-light">{item.desc || item.description}</p>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center py-20 text-zinc-500">
+                                        <ChefHat size={48} className="mb-4 opacity-20" />
+                                        <p className="font-light italic">Refining today's culinary offerings...</p>
+                                    </div>
+                                )}
+                            </motion.div>
+                        )}
+
+                        {activeTab === 'packages' && (
+                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+                                {packLoading ? (
+                                    <p className="text-zinc-400 font-light text-center py-10">Loading packages...</p>
+                                ) : packages && packages.length > 0 ? (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        {packages.map(pkg => (
+                                            <div key={pkg._id} className="bg-zinc-900/50 border border-white/5 p-6 rounded-xl hover:border-amber-500/30 transition-all flex flex-col justify-between group">
+                                                <div>
+                                                    <div className="flex justify-between items-start mb-3">
+                                                        <h4 className="text-xl font-serif text-white group-hover:text-amber-500 transition-colors">{pkg.title}</h4>
+                                                        <div className="flex flex-col items-end">
+                                                            <span className="text-amber-500 font-medium px-3 py-1 bg-amber-500/10 rounded-full text-sm">Base: ₹{pkg.basePrice}</span>
+                                                            {pkg.advanceAmount > 0 && (
+                                                                <span className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider">₹{pkg.advanceAmount} Advance</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <p className="text-sm text-zinc-400 font-light mb-6 line-clamp-2">{pkg.description}</p>
+
+                                                    {pkg.guestOptions?.length > 0 && (
+                                                        <div className="space-y-2 mb-6">
+                                                            <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Tiered Pricing</p>
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                {pkg.guestOptions.map((opt, i) => (
+                                                                    <div key={i} className="bg-black/40 border border-white/5 p-2 rounded-lg flex justify-between items-center">
+                                                                        <span className="text-xs text-zinc-300">{opt.guests} Guests</span>
+                                                                        <span className="text-xs text-amber-500 font-bold">₹{opt.price}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedPackage(pkg._id.toString());
+                                                        // If it's a specific guest count package, we could auto-set guests here
+                                                        window.scrollTo({ top: 300, behavior: 'smooth' });
+                                                    }}
+                                                    className="w-full py-3 border border-amber-500/50 text-amber-500 hover:bg-amber-500 hover:text-black transition-all rounded-xl font-medium text-sm shadow-[0_0_15px_rgba(212,175,55,0.1)] group-hover:shadow-[0_0_20px_rgba(212,175,55,0.2)]"
+                                                >
+                                                    Book this Experience
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="text-zinc-400 font-light">No special experiences or packages available at this time.</p>
+                                )}
+                            </motion.div>
+                        )}
+
+                        {/* Reviews Tab */}
+                        {activeTab === 'reviews' && (
+                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                                <div className="flex items-center justify-between mb-8">
+                                    <div className="flex items-center gap-4">
+                                        <h2 className="text-5xl font-serif text-white">{avgRating || restaurant.rating || 0}</h2>
+                                        <div className="flex flex-col">
+                                            <div className="flex text-amber-500 mb-1">
+                                                {[1, 2, 3, 4, 5].map(n => (
+                                                    <Star key={n} className={`w-5 h-5 ${n <= Math.round(avgRating || restaurant.rating || 0) ? 'fill-current text-amber-500' : 'text-zinc-600'}`} />
+                                                ))}
+                                            </div>
+                                            <span className="text-sm text-zinc-400">{liveReviews.length} {liveReviews.length === 1 ? 'Review' : 'Reviews'}</span>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => setIsReviewModalOpen(true)} className="px-6 py-2 border border-amber-500 text-amber-500 hover:bg-amber-500 hover:text-black transition-colors rounded-lg font-medium">Leave Review</button>
+                                </div>
+
+                                {reviewsLoading ? (
+                                    <div className="flex justify-center py-12">
+                                        <Loader2 className="w-8 h-8 text-amber-500 animate-spin" />
+                                    </div>
+                                ) : (
+                                    <div className="space-y-6">
+                                        {liveReviews.length > 0 ? (
+                                            liveReviews.map(review => {
+                                                const API_BASE = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+                                                return (
+                                                    <div key={review._id} className="bg-zinc-900 border border-white/5 p-6 rounded-xl hover:border-amber-500/20 transition-colors">
+                                                        <div className="flex justify-between items-start mb-4">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden border border-white/10 flex items-center justify-center">
+                                                                    <img
+                                                                        src={review.profileImage || (review.userId?.profileImage ? `${API_BASE}${review.userId.profileImage}` : `https://api.dicebear.com/7.x/adventurer/svg?seed=${review.userName || 'Guest'}`)}
+                                                                        alt={review.userName || 'Guest'}
+                                                                        className="w-full h-full object-cover"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <span className="text-white font-medium block">{review.userName || review.userId?.name || 'Guest'}</span>
+                                                                    <span className="text-xs text-zinc-500">{new Date(review.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex flex-col items-end gap-1">
+                                                                <div className="flex items-center gap-1 bg-amber-500/10 px-3 py-1 rounded-full">
+                                                                    <Star className="w-3.5 h-3.5 fill-current text-amber-500" />
+                                                                    <span className="text-amber-500 text-sm font-bold">{review.rating}</span>
+                                                                </div>
+                                                                <div className="flex gap-2 text-[10px] text-zinc-500 uppercase tracking-tighter">
+                                                                    <span>Food: <b className="text-zinc-300">{review.foodRating || 0}/10</b></span>
+                                                                    <span>Ambience: <b className="text-zinc-300">{review.ambienceRating || 0}/10</b></span>
+                                                                    <span>Staff: <b className="text-zinc-300">{review.staffRating || 0}/10</b></span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <p className="text-zinc-300 font-light leading-relaxed">{review.comment}</p>
+                                                        {review.ownerReply && (
+                                                            <div className="mt-4 pl-4 border-l-2 border-amber-500/30">
+                                                                <p className="text-xs text-amber-500 mb-1 font-medium">Owner's Reply</p>
+                                                                <p className="text-zinc-400 text-sm">{review.ownerReply}</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })
+                                        ) : (
+                                            <div className="text-center py-12">
+                                                <Star className="w-12 h-12 text-zinc-700 mx-auto mb-4" />
+                                                <p className="text-zinc-400 font-light">No reviews yet. Be the first to share your experience!</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </motion.div>
+                        )}
+                    </div>
+
+                    {/* Right Column (Sticky Reservation Card) */}
+                    <div className="w-full lg:w-1/3 relative" ref={reservationRef}>
+                        {existingBooking ? (
+                            <div className="sticky top-28 bg-zinc-900 border border-green-500/30 rounded-2xl p-6 shadow-[0_0_30px_rgba(74,222,128,0.15)] flex flex-col justify-between min-h-[400px]">
+                                <div>
+                                    <div className="text-center mb-6 border-b border-white/10 pb-4">
+                                        <div className="w-12 h-12 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-3">
+                                            <Info className="w-6 h-6 text-green-400" />
+                                        </div>
+                                        <h3 className="text-xl font-serif text-white">You Already Have a Booking</h3>
+                                    </div>
+
+                                    <div className="space-y-3 mb-6 bg-black/40 p-4 rounded-xl border border-white/5">
+                                        <p className="text-sm flex justify-between"><span className="text-zinc-400">Restaurant</span><span className="text-white font-medium text-right max-w-[60%] truncate">{existingBooking.restaurantName}</span></p>
+                                        <p className="text-sm flex justify-between"><span className="text-zinc-400">Date</span><span className="text-white font-medium">{new Date(existingBooking.date).toLocaleDateString()}</span></p>
+                                        <p className="text-sm flex justify-between"><span className="text-zinc-400">Time</span><span className="text-white font-medium">{existingBooking.time}</span></p>
+                                        <p className="text-sm flex justify-between"><span className="text-zinc-400">Guests</span><span className="text-white font-medium">{existingBooking.guests}</span></p>
+                                        <p className="text-sm flex justify-between"><span className="text-amber-500 font-medium tracking-wide">₹{existingBooking.totalAmount}</span></p>
+                                        <p className="text-sm flex justify-between mt-2 pt-2 border-t border-white/10"><span className="text-zinc-400">Booking ID</span><span className="text-zinc-300 font-mono text-[10px] break-all max-w-[60%] text-right">{existingBooking.bookingId}</span></p>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col gap-3 mt-auto">
+                                    <button onClick={() => navigate('/dashboard')} className="w-full py-3 bg-amber-500 text-black font-semibold rounded-xl hover:bg-amber-400 transition-colors shadow-[0_0_15px_rgba(212,175,55,0.2)]">
+                                        View in Dashboard
+                                    </button>
+                                    <button
+                                        onClick={handleCancelBooking}
+                                        disabled={cancelLoading}
+                                        className="w-full py-3 bg-transparent border border-white/10 text-zinc-400 font-medium rounded-xl hover:text-red-400 hover:border-red-500/30 hover:bg-red-500/5 transition-all disabled:opacity-50"
+                                    >
+                                        {cancelLoading ? 'Cancelling...' : 'Cancel Booking'}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="sticky top-28 bg-zinc-900 border border-white/10 rounded-2xl p-6 shadow-2xl">
+                                <h3 className="text-2xl font-serif text-white mb-6 text-center border-b border-white/10 pb-4">Make a Reservation</h3>
+
+                                <div className="space-y-5">
+                                    {/* Guests */}
+                                    <div className="bg-black/40 border border-white/10 rounded-xl p-3 flex items-center cursor-pointer hover:border-amber-500/50 transition-colors">
+                                        <Users className="text-amber-500 mr-4 ml-2" size={20} />
+                                        <div className="flex-1">
+                                            <span className="block text-xs text-zinc-400 uppercase tracking-wider mb-1">Party Size</span>
+                                            <select
+                                                value={guests}
+                                                onChange={(e) => setGuests(e.target.value)}
+                                                className="w-full bg-transparent text-white font-medium focus:outline-none cursor-pointer appearance-none"
+                                            >
+                                                {[1, 2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n} className="bg-zinc-900">{n} {n === 1 ? 'Guest' : 'Guests'}</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {/* Date */}
+                                    <div
+                                        className="bg-black/40 border border-white/10 rounded-xl p-3 flex items-center cursor-pointer hover:border-amber-500/50 transition-colors"
+                                        onClick={() => document.getElementById('reservation-date-input')?.showPicker()}
+                                    >
+                                        <Calendar className="text-amber-500 mr-4 ml-2" size={20} />
+                                        <div className="flex-1">
+                                            <span className="block text-xs text-zinc-400 uppercase tracking-wider mb-1">Date</span>
+                                            <input
+                                                id="reservation-date-input"
+                                                type="date"
+                                                value={date}
+                                                min={new Date().toISOString().split('T')[0]}
+                                                onChange={(e) => setDate(e.target.value)}
+                                                className="w-full bg-transparent text-white focus:outline-none cursor-pointer"
+                                                style={{ colorScheme: 'dark' }}
+                                                onClick={(e) => e.stopPropagation()}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Time Slot Selection */}
+                                    <div className="bg-black/40 border border-white/10 rounded-xl p-4">
+                                        <div className="flex items-center mb-3">
+                                            <Clock className="text-amber-500 mr-3" size={20} />
+                                            <span className="text-xs text-zinc-400 uppercase tracking-wider font-medium">Select Time Slot</span>
+                                        </div>
+
+                                        {!date ? (
+                                            <p className="text-sm text-zinc-500 text-center py-2">Please select a date first</p>
+                                        ) : slotLoading ? (
+                                            <div className="flex justify-center py-2">
+                                                <div className="w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+                                            </div>
+                                        ) : publicSlots?.length > 0 ? (
+                                            <div className="grid grid-cols-2 gap-2 mt-2">
+                                                {publicSlots.map((slot, index) => {
+                                                    const isFull = !slot.isAvailable || slot.remaining <= 0;
+                                                    const isSelected = selectedSlotId === slot._id;
+                                                    return (
+                                                        <button
+                                                            key={slot._id || index}
+                                                            onClick={() => {
+                                                                if (!isFull || (isFull && isAuthenticated)) {
+                                                                    setSelectedSlotId(slot._id);
+                                                                    setTime(slot.time);
+                                                                    setIsSelectedFull(isFull);
+                                                                } else {
+                                                                    navigate('/login', { state: { returnTo: `/restaurants/${id}` } });
+                                                                }
+                                                            }}
+                                                            className={`py-3 px-2 rounded-lg text-sm font-medium transition-all flex flex-col items-center gap-0.5 ${isSelected
+                                                                ? 'bg-amber-500 text-black shadow-[0_0_12px_rgba(212,175,55,0.5)]'
+                                                                : isFull
+                                                                    ? 'bg-zinc-900 text-zinc-400 border border-white/10 hover:border-amber-500/30 cursor-pointer'
+                                                                    : 'bg-zinc-800 text-white hover:bg-zinc-700 border border-white/10 hover:border-amber-500/40'
+                                                                }`}
+                                                        >
+                                                            <span className="font-semibold">{slot.time}</span>
+                                                            <span className={`text-xs ${isSelected ? 'text-black/70' : isFull ? 'text-amber-500/70' : 'text-zinc-400'}`}>
+                                                                {isFull ? 'Waitlist' : `${slot.remaining} left`}
+                                                            </span>
+                                                            {slot.tableTypeLabel && (
+                                                                <span className={`text-[10px] font-normal ${isSelected ? 'text-black/60' : 'text-zinc-500'}`}>
+                                                                    {slot.tableTypeLabel}
+                                                                </span>
+                                                            )}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        ) : (
+                                            <p className="text-sm text-zinc-500 text-center py-2">No slots available for this date.</p>
+                                        )}
+                                    </div>
+
+                                    {/* Step 4: Optional Add-ons */}
+                                    {packages && packages.length > 0 && (
+                                        <div className="mt-6 pt-6 border-t border-white/10">
+                                            <div className="flex items-center mb-4">
+                                                <Star className="text-amber-500 mr-3" size={20} />
+                                                <span className="text-xs text-zinc-400 uppercase tracking-wider font-medium">Enhance Your Reservation (Optional)</span>
+                                            </div>
+                                            <div className="space-y-3">
+                                                {packages.map(pkg => {
+                                                    const totalPkgCost = (pkg.basePrice || pkg.price || 0) + (pkg.decorationCost || 0);
+                                                    const maxCap = pkg.maxCapacity || pkg.maxPeople || 99;
+                                                    const isDisabled = guests > maxCap;
+                                                    const isSelected = selectedPackage === pkg._id.toString();
+
+                                                    return (
+                                                        <div
+                                                            key={pkg._id}
+                                                            onClick={() => { if (!isDisabled) setSelectedPackage(isSelected ? "" : pkg._id.toString()) }}
+                                                            className={`p-4 rounded-xl border transition-all ${isDisabled ? 'bg-zinc-900/50 border-white/5 opacity-50 cursor-not-allowed' : isSelected ? 'bg-amber-500/10 border-amber-500 cursor-pointer shadow-[0_0_15px_rgba(212,175,55,0.1)]' : 'bg-black/40 border-white/10 hover:border-white/30 cursor-pointer'}`}
+                                                        >
+                                                            <div className="flex justify-between items-start mb-2">
+                                                                <h5 className="text-white font-medium text-sm flex items-center">
+                                                                    {pkg.title}
+                                                                    {pkg.type && <span className="ml-2 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-500 text-[10px] uppercase font-bold tracking-wider">{pkg.type}</span>}
+                                                                </h5>
+                                                                <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${isSelected ? 'border-amber-500 bg-amber-500' : 'border-zinc-500'}`}>
+                                                                    {isSelected && <div className="w-2 h-2 rounded-full bg-black"></div>}
+                                                                </div>
+                                                            </div>
+                                                            <p className="text-zinc-400 font-light text-xs mb-3">{pkg.description || pkg.desc}</p>
+                                                            <div className="flex justify-between items-center text-xs">
+                                                                <span className="text-zinc-500 flex items-center">
+                                                                    <Users size={12} className="mr-1" /> Max {maxCap} guests
+                                                                </span>
+                                                                <span className="text-amber-500 font-semibold px-2 py-1 bg-amber-500/10 rounded-md">
+                                                                    ₹{totalPkgCost}
+                                                                </span>
+                                                            </div>
+                                                            {isSelected && (
+                                                                <div className="mt-3 pt-3 border-t border-white/5 flex items-start gap-2 text-[10px] text-amber-500/80 leading-tight">
+                                                                    <ShieldAlert size={12} className="shrink-0" />
+                                                                    <p><b>Refund Policy:</b> Cancel before 12 hours for a full refund. No refund thereafter.</p>
+                                                                </div>
+                                                            )}
+                                                            {isDisabled && <p className="text-red-400 text-[10px] mt-2">Party size exceeds maximum capacity.</p>}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <button
+                                        onClick={async () => {
+                                            if (!isAuthenticated) {
+                                                navigate('/login', { state: { returnTo: `/restaurants/${id}`, message: 'Please sign in to reserve a table.' } });
+                                                return;
+                                            }
+                                            if (!date) {
+                                                showAlert({ type: 'warning', title: 'Date Required', message: 'Please select a reservation date before continuing.' });
+                                                return;
+                                            }
+                                            if (!selectedSlotId || !time) {
+                                                showAlert({ type: 'warning', title: 'Time Slot Required', message: 'Please select an available time slot.' });
+                                                return;
+                                            }
+
+                                            // If joining waitlist
+                                            if (isSelectedFull) {
+                                                try {
+                                                    setBookingLoading(true);
+                                                    const waitRes = await api.post('reservations/waitlist', {
+                                                        restaurantId: restaurant._id,
+                                                        date,
+                                                        time,
+                                                        guests
+                                                    });
+                                                    showAlert({
+                                                        type: 'success',
+                                                        title: 'Joined Waitlist',
+                                                        message: waitRes.data.message || 'We will notify you if a table becomes available!'
+                                                    });
+                                                } catch (err) {
+                                                    showAlert({
+                                                        type: 'error',
+                                                        title: 'Waitlist Failed',
+                                                        message: err.response?.data?.message || 'Failed to join waitlist.'
+                                                    });
+                                                } finally {
+                                                    setBookingLoading(false);
+                                                }
+                                                return;
+                                            }
+
+                                            const pkgObj = packages?.find(p => p._id.toString() === selectedPackage);
+                                            let finalPackagePrice = 0;
+                                            if (pkgObj) {
+                                                const guestTier = pkgObj.guestOptions?.find(opt => opt.guests === parseInt(guests));
+                                                finalPackagePrice = guestTier ? guestTier.price : (pkgObj.basePrice || pkgObj.price || 0);
+                                                finalPackagePrice += (pkgObj.decorationCost || 0);
+                                            }
+
+                                            navigate('/checkout', {
+                                                state: {
+                                                    restaurantId: restaurant._id,
+                                                    restaurantName: restaurant.name,
+                                                    date,
+                                                    time,
+                                                    guests,
+                                                    slotId: selectedSlotId,
+                                                    packageId: selectedPackage || null,
+                                                    packageTitle: pkgObj?.title,
+                                                    packagePrice: finalPackagePrice,
+                                                    advanceAmount: pkgObj?.advanceAmount || 0
+                                                }
+                                            });
+                                        }}
+                                        disabled={bookingLoading}
+                                        className="w-full bg-amber-500 hover:bg-amber-400 text-black font-semibold py-4 rounded-xl transition-all shadow-[0_0_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] mt-4 disabled:opacity-50 flex items-center justify-center gap-2"
+                                    >
+                                        {bookingLoading ? (
+                                            <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                                        ) : (
+                                            isSelectedFull ? 'Join Waitlist' : (selectedPackage ? 'Book Package' : 'Find Table')
+                                        )}
+                                    </button>
+
+                                    <p className="text-center text-xs text-zinc-400 mt-4">
+                                        You will not be charged yet.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* Review Modal */}
+            {isReviewModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl"
+                    >
+                        <h3 className="text-2xl font-serif text-white mb-4">Rate & Review</h3>
+                        <form onSubmit={handleAddReview} className="space-y-5">
+                            <div>
+                                <label className="block text-sm font-medium text-zinc-400 mb-2">Overall Rating</label>
+                                <div className="flex gap-2 mb-4">
+                                    {[1, 2, 3, 4, 5].map(star => (
+                                        <button
+                                            key={star}
+                                            type="button"
+                                            onClick={() => setReviewRating(star)}
+                                            className={`p-1 transition-colors ${reviewRating >= star ? 'text-amber-500' : 'text-zinc-600'}`}
+                                        >
+                                            <Star className="w-8 h-8 fill-current" />
+                                        </button>
+                                    ))}
+                                </div>
+                                <div className="grid grid-cols-3 gap-3">
+                                    {['food', 'ambience', 'staff'].map(cat => (
+                                        <div key={cat}>
+                                            <label className="block text-[10px] text-zinc-500 uppercase font-bold mb-1">{cat}</label>
+                                            <input
+                                                type="number"
+                                                min="0" max="10"
+                                                placeholder="0-10"
+                                                className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-white text-xs"
+                                                onChange={(e) => {
+                                                    const val = parseInt(e.target.value);
+                                                    if (cat === 'food') setFoodRating(val);
+                                                    if (cat === 'ambience') setAmbienceRating(val);
+                                                    if (cat === 'staff') setStaffRating(val);
+                                                }}
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-zinc-400 mb-2">Share your experience</label>
+                                <textarea
+                                    required
+                                    rows="4"
+                                    value={reviewComment}
+                                    onChange={(e) => setReviewComment(e.target.value)}
+                                    className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-amber-500 resize-none"
+                                    placeholder="What did you love? What could be better?"
+                                ></textarea>
+                            </div>
+                            <div className="flex gap-4 pt-4 border-t border-white/10">
+                                <button type="button" onClick={() => setIsReviewModalOpen(false)} className="flex-1 py-3 rounded-xl border border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancel</button>
+                                <button type="submit" disabled={reviewLoading} className="flex-1 py-3 rounded-xl bg-amber-500 text-black font-medium hover:bg-amber-400 transition-colors shadow-[0_0_15px_rgba(212,175,55,0.2)] disabled:opacity-50">
+                                    {reviewLoading ? 'Submitting...' : 'Post Review'}
+                                </button>
+                            </div>
+                        </form>
+                    </motion.div>
+                </div>
+            )}
+            <ReservationCancelModal
+                isOpen={isCancelModalOpen}
+                onClose={() => setIsCancelModalOpen(false)}
+                onConfirm={handleConfirmCancel}
+                reservation={existingBooking ? { ...existingBooking, _id: existingBooking.bookingId } : null}
+            />
+        </div>
+    );
+};
+
+export default DetailsPage;

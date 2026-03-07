@@ -1,0 +1,211 @@
+# Restaurant Reservation & Review Platform - Implementation Plan
+
+A full-stack MERN application for restaurant reservations, reviews, real-time availability, and management dashboards. Built with React + Vite + TailwindCSS frontend and Express + MongoDB backend.
+
+## User Review Required
+
+> [!IMPORTANT]
+> This is a very large project. I propose building it in **incremental phases**, starting with Phase 1 (Foundation + Backend + Auth + Public Pages) as a single initial batch. Each phase will be verified before moving to the next. **Do you want me to proceed with Phase 1 first, or would you prefer a different ordering?**
+
+> [!NOTE]
+> **Payment**: Using **Razorpay** (test mode). Will ask for API keys when implementing Phase 2.
+>
+> **Database**: MongoDB Atlas URI provided — will be stored in `server/.env`.
+>
+> TailwindCSS v4 `@tailwindcss/vite` plugin is already configured (no config file needed).
+
+---
+
+## Phase 1: Foundation, Auth & Public Pages (STARTING HERE)
+
+### 1A. Frontend Foundation
+
+#### [MODIFY] [App.css](file:///d:/GUVI%20TASK/CAPSTONE%20PROJECT/restaurant-reservation%20website/Frontend/src/App.css)
+- Replace with full TailwindCSS theme using `@theme` directive
+- Define custom color palette (elegant greens, neutrals, accents)
+- Add custom font imports (Inter from Google Fonts)
+- Define reusable component styles
+
+#### [MODIFY] [index.html](file:///d:/GUVI%20TASK/CAPSTONE%20PROJECT/restaurant-reservation%20website/Frontend/index.html)
+- Update title to "DineReserve - Restaurant Reservations"
+- Add proper meta tags and Google Fonts link
+
+#### [MODIFY] [App.jsx](file:///d:/GUVI%20TASK/CAPSTONE%20PROJECT/restaurant-reservation%20website/Frontend/src/App.jsx)
+- Replace boilerplate with React Router setup
+- Wrap with AuthProvider context
+
+#### [MODIFY] [main.jsx](file:///d:/GUVI%20TASK/CAPSTONE%20PROJECT/restaurant-reservation%20website/Frontend/src/main.jsx)
+- Add BrowserRouter wrapper
+
+#### [NEW] Frontend folder structure:
+```
+src/
+├── components/
+│   ├── common/          (Navbar, Footer, LoadingSpinner, StarRating)
+│   ├── home/            (Hero, SearchBar, FeaturedRestaurants, etc.)
+│   ├── restaurant/      (RestaurantCard, MenuCard, ReviewCard, etc.)
+│   ├── booking/         (BookingForm, TimeSlotPicker, MealSelector)
+│   └── dashboard/       (Sidebar, StatsCard, DataTable)
+├── pages/
+│   ├── public/          (Home, RestaurantListing, RestaurantDetails, Contact)
+│   ├── auth/            (Login, Signup)
+│   ├── booking/         (Checkout, Payment, BookingSuccess)
+│   ├── user/            (Dashboard, Reservations, Reviews, Favorites, Tickets)
+│   ├── owner/           (Dashboard, ReservationMgmt, MenuMgr, ReviewsMgmt, Tickets)
+│   └── admin/           (Dashboard, Users, Restaurants, Reviews, Support)
+├── layouts/             (MainLayout, DashboardLayout, AuthLayout)
+├── context/             (AuthContext, SocketContext)
+├── hooks/               (useAuth, useSocket, useRestaurants)
+├── services/            (api.js, auth.js, restaurants.js, reservations.js, reviews.js)
+├── routes/              (AppRoutes.jsx, ProtectedRoute.jsx)
+└── assets/              (images, icons)
+```
+
+---
+
+### 1B. Backend Foundation
+
+#### [NEW] Backend folder structure:
+```
+server/
+├── controllers/   (authController, restaurantController, reservationController, etc.)
+├── models/        (User, Restaurant, Reservation, Review, SupportTicket)
+├── services/      (razorpay.js)
+├── routes/        (authRoutes, restaurantRoutes, reservationRoutes, etc.)
+├── middleware/     (auth.js, roleAuth.js, errorHandler.js, upload.js)
+├── config/        (db.js)
+├── utils/         (generateToken.js, seedData.js)
+├── server.js
+├── package.json
+└── .env           (MONGO_URI, JWT_SECRET, RAZORPAY keys)
+```
+
+#### Database Models (Mongoose)
+
+**User**: name, email, password (hashed), role (`customer`|`owner`|`admin`), phone, avatar, favorites[], createdAt
+
+**Restaurant**: name, owner (ref User), description, cuisine[], location (address, city, state, coordinates), priceRange (1-4), images[], phone, email, website, hours (openTime, closeTime, days), totalTables, reservedTables, tableTypes [{type, capacity, count}], menu [{name, description, price, category, image, dietary[]}], features (outdoorSeating, liveMusic, wifi, parking, privateEvents), ambiance, rating (avg), totalReviews, isActive, crowdStatus
+
+**Reservation**: user (ref), restaurant (ref), date, time, guests, tableType, meals [{menuItemId, quantity, price}], eventType (none|birthday|corporate|anniversary), eventDetails {decoration, specialRequest}, totalAmount, paymentStatus, paymentId, status (pending|confirmed|cancelled|completed), notes, createdAt
+
+**Review**: user (ref), restaurant (ref), rating (1-5), comment, images[], ownerReply {text, date}, isEdited, createdAt
+
+**SupportTicket**: user (ref), restaurant (ref), category, subject, description, status (open|in-progress|resolved|closed), ownerReply, adminReply, createdAt
+
+#### API Endpoints
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| POST | `/api/auth/register` | Register user |
+| POST | `/api/auth/login` | Login |
+| GET | `/api/auth/me` | Get current user |
+| GET | `/api/restaurants` | List/search restaurants |
+| GET | `/api/restaurants/:id` | Get restaurant details |
+| POST | `/api/restaurants` | Create restaurant (owner) |
+| PUT | `/api/restaurants/:id` | Update restaurant (owner) |
+| DELETE | `/api/restaurants/:id` | Delete restaurant (admin) |
+| POST | `/api/reservations` | Book reservation |
+| GET | `/api/reservations/my` | User's reservations |
+| PUT | `/api/reservations/:id` | Modify reservation |
+| DELETE | `/api/reservations/:id` | Cancel reservation |
+| POST | `/api/reviews` | Add review |
+| GET | `/api/reviews/restaurant/:id` | Get restaurant reviews |
+| PUT | `/api/reviews/:id` | Edit review |
+| DELETE | `/api/reviews/:id` | Delete review |
+| PUT | `/api/reviews/:id/reply` | Owner reply |
+| POST | `/api/payments/create` | Create payment |
+| POST | `/api/payments/verify` | Verify payment |
+| POST | `/api/support` | Create ticket |
+| GET | `/api/support/my` | User's tickets |
+| PUT | `/api/support/:id/reply` | Reply to ticket |
+| GET | `/api/admin/users` | List users (admin) |
+| GET | `/api/admin/stats` | Dashboard stats (admin) |
+
+---
+
+### 1C. Public Pages (Phase 1 UI)
+
+**Home Page** - Premium landing page with:
+- Navbar with auth buttons and user dropdown
+- Hero with large background image + floating search bar
+- Featured restaurants grid (3-4 cards)
+- "How it works" section (3 steps)
+- Events showcase section
+- Live crowd status preview
+- Testimonials carousel
+- CTA section
+- Footer
+
+**Restaurant Listing** - Search results with:
+- Filter sidebar (cuisine, price, rating, features)
+- Restaurant cards grid with images, ratings, price
+- Sort options (rating, price, name)
+- Pagination
+
+**Restaurant Details** - Full restaurant profile with:
+- Image gallery
+- Info section (hours, cuisine, price, location)
+- Menu section with category tabs
+- Reviews section with ratings breakdown
+- Sticky reservation panel (right side)
+- Crowd status indicator
+
+**Login/Signup Pages** - Clean auth forms with validation
+
+---
+
+## Phase 2: Reservation System & Payments
+- Booking flow (date/time/guests → meal selection → event options → checkout)
+- Real-time availability via Socket.io
+- **Razorpay** payment integration (will ask for API keys at this stage)
+- Booking confirmation page
+
+## Phase 3: User Dashboard
+- Dashboard layout with sidebar
+- My Reservations (with modify/cancel)
+- My Reviews (with edit/delete)
+- Favorites/Wishlist
+- Support Tickets
+
+## Phase 4: Owner Dashboard
+- Restaurant management
+- Reservation management
+- Menu manager (CRUD)
+- Review replies
+- Support tickets
+
+## Phase 5: Admin Dashboard
+- User management
+- Restaurant management
+- Review moderation
+- Support management
+- Analytics/Stats
+
+## Phase 6: Advanced Features & Polish
+- Recommendation engine
+- Real-time crowd status with Socket.io
+- Responsive design polish
+- Build verification
+
+---
+
+## Verification Plan
+
+### Automated Tests
+- **Frontend build**: `cd Frontend && npm run build` — must compile without errors
+- **Backend start**: `cd server && node server.js` — must start without errors
+- **API testing**: Use browser subagent to test API endpoints via the running server
+
+### Browser-Based Verification
+- Navigate to `http://localhost:5173` and verify:
+  - Home page renders correctly with all sections
+  - Navbar, hero, search bar, featured restaurants, footer
+  - Restaurant listing page with filter sidebar
+  - Restaurant details page layout
+  - Login/Signup forms
+  - Responsive design on different screen sizes
+
+### Manual Verification
+- User should check visual design matches the OpenTable/Airbnb premium aesthetic
+- User should test booking flow end-to-end
+- User should test payment in Stripe test mode
